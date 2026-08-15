@@ -111,6 +111,14 @@ def compute_max_moves(ticker_data):
             max_drop = pct_chg.min()
             max_drop_date = pct_chg.idxmin()
 
+            pct_chg_2d = (close / close.shift(2) - 1) * 100
+            pct_chg_2d = pct_chg_2d.dropna()
+
+            max_gain_2d = pct_chg_2d.max()
+            max_gain_2d_date = pct_chg_2d.idxmax()
+            max_drop_2d = pct_chg_2d.min()
+            max_drop_2d_date = pct_chg_2d.idxmin()
+
             rows.append({
                 "Ticker": ticker,
                 "Max 1D Gain %": round(float(max_gain), 2),
@@ -119,6 +127,10 @@ def compute_max_moves(ticker_data):
                 "Drop Date": max_drop_date.strftime("%Y-%m-%d"),
                 "History Start": close.index[0].strftime("%Y-%m-%d"),
                 "History Days": len(close),
+                "Max 2D Gain %": round(float(max_gain_2d), 2),
+                "2D Gain End Date": max_gain_2d_date.strftime("%Y-%m-%d"),
+                "Max 2D Drop %": round(float(max_drop_2d), 2),
+                "2D Drop End Date": max_drop_2d_date.strftime("%Y-%m-%d"),
             })
         except Exception:
             continue
@@ -153,7 +165,9 @@ if moves_df.empty:
 
 st.success(f"Loaded {len(moves_df)} / {len(KNOWN_STOCKS)} tickers successfully.")
 
-tab_gains, tab_drops, tab_all = st.tabs(["🚀 Biggest Gains", "📉 Biggest Drops", "📋 Full Table"])
+tab_gains, tab_drops, tab_gains2d, tab_drops2d, tab_all = st.tabs(
+    ["🚀 Biggest Gains", "📉 Biggest Drops", "🚀🚀 Biggest 2D Gains", "📉📉 Biggest 2D Drops", "📋 Full Table"]
+)
 
 with tab_gains:
     st.subheader("Top 30 — Largest Single-Day % Gain (All-Time)")
@@ -177,9 +191,31 @@ with tab_drops:
         }
     )
 
+with tab_gains2d:
+    st.subheader("Top 30 — Largest 2-Day Cumulative % Gain (All-Time)")
+    top_gains_2d = moves_df.sort_values("Max 2D Gain %", ascending=False).head(30).reset_index(drop=True)
+    st.dataframe(
+        top_gains_2d[["Ticker", "Max 2D Gain %", "2D Gain End Date", "History Start"]],
+        use_container_width=True, hide_index=True,
+        column_config={
+            "Max 2D Gain %": st.column_config.NumberColumn(format="%.2f%%"),
+        }
+    )
+
+with tab_drops2d:
+    st.subheader("Top 30 — Largest 2-Day Cumulative % Drop (All-Time)")
+    top_drops_2d = moves_df.sort_values("Max 2D Drop %", ascending=True).head(30).reset_index(drop=True)
+    st.dataframe(
+        top_drops_2d[["Ticker", "Max 2D Drop %", "2D Drop End Date", "History Start"]],
+        use_container_width=True, hide_index=True,
+        column_config={
+            "Max 2D Drop %": st.column_config.NumberColumn(format="%.2f%%"),
+        }
+    )
+
 with tab_all:
     st.subheader("All Tickers")
-    sort_col = st.selectbox("Sort by", ["Max 1D Gain %", "Max 1D Drop %", "Ticker", "History Days"])
+    sort_col = st.selectbox("Sort by", ["Max 1D Gain %", "Max 1D Drop %", "Max 2D Gain %", "Max 2D Drop %", "Ticker", "History Days"])
     ascending = st.checkbox("Ascending", value=False)
     display_df = moves_df.sort_values(sort_col, ascending=ascending).reset_index(drop=True)
     st.dataframe(
@@ -187,6 +223,8 @@ with tab_all:
         column_config={
             "Max 1D Gain %": st.column_config.NumberColumn(format="%.2f%%"),
             "Max 1D Drop %": st.column_config.NumberColumn(format="%.2f%%"),
+            "Max 2D Gain %": st.column_config.NumberColumn(format="%.2f%%"),
+            "Max 2D Drop %": st.column_config.NumberColumn(format="%.2f%%"),
         }
     )
     st.download_button(
