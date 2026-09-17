@@ -1430,12 +1430,12 @@ if lime_perf_rows:
     {js}
     """
 
-    col_lime_chart, col_pine_rs = st.columns([4, 1])  # NEW: right-side column for RS table
-    with col_lime_chart:
-        st.components.v1.html(html_out, height=SVG_H + 24, scrolling=False)
-    with col_pine_rs:  # NEW
-        pine_rs_rows = timed("compute_pine_rs_table", compute_pine_rs_table, tuple(PINE_RS_TICKERS))
-        st.markdown(render_pine_rs_table_html(pine_rs_rows, SVG_H), unsafe_allow_html=True)
+    # col_lime_chart, col_pine_rs = st.columns([4, 1])  # NEW: right-side column for RS table
+    # with col_lime_chart:
+    #     st.components.v1.html(html_out, height=SVG_H + 24, scrolling=False)
+    # with col_pine_rs:  # NEW
+    #     pine_rs_rows = timed("compute_pine_rs_table", compute_pine_rs_table, tuple(PINE_RS_TICKERS))
+    #     st.markdown(render_pine_rs_table_html(pine_rs_rows, SVG_H), unsafe_allow_html=True)
 
     # ============================================================
     # ADDITIVE: Single-column chart — % Change Since Today's Open
