@@ -1,0 +1,30 @@
+name: Daily Streamlit Screenshot
+
+on:
+  schedule:
+    # 10:00 PM Singapore Time (SGT = UTC+8) = 14:00 UTC
+    - cron: "0 14 * * *"
+  workflow_dispatch: # lets you also trigger it manually from the Actions tab
+
+jobs:
+  screenshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run screenshot script
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python screenshot.py
