@@ -240,7 +240,6 @@ import pandas as pd
 import numpy as np
 import time
 import re
-from google import genai
 import plotly.graph_objects as go
 import streamlit.components.v1 as components
 import requests
