@@ -50,9 +50,11 @@ def wait_for_wake_up(page, timeout_seconds=WAKE_UP_TIMEOUT_SECONDS):
     (it's replaced by the real app, usually after a reload).
     """
     try:
-        wake_btn = page.get_by_text("get this app back up", exact=False)
-        if wake_btn.count() == 0 or not wake_btn.first.is_visible():
-            return  # not asleep, nothing to do
+        wake_btn = page.get_by_role("button", name="get this app back up", exact=False)
+        try:
+            wake_btn.first.wait_for(state="visible", timeout=8000)
+        except Exception:
+            return  # button never showed up -- not asleep, nothing to do
 
         print("App was asleep -- clicking wake-up button.")
         wake_btn.first.click()
