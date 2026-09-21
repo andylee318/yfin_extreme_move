@@ -9,6 +9,8 @@ Env vars required (set as GitHub Actions secrets):
 
 import os
 import time
+import datetime                 # <-- add
+from zoneinfo import ZoneInfo   # <-- add
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -29,6 +31,18 @@ WAKE_UP_TIMEOUT_SECONDS = 90
 # on the page before falling back to the fixed WAIT_AFTER_LOAD_SECONDS wait.
 CONTENT_READY_TIMEOUT_SECONDS = 60
 
+MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def is_market_open_now() -> bool:
+    """True on NYSE trading hours (weekday 9:30am-4:00pm ET).
+    Does NOT account for market holidays."""
+    now_et = datetime.datetime.now(MARKET_TZ)
+    if now_et.weekday() >= 5:  # Sat=5, Sun=6
+        return False
+    open_t = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    close_t = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+    return open_t <= now_et <= close_t
 
 def send_photo(image_bytes, caption):
     resp = requests.post(
@@ -99,6 +113,10 @@ def wait_for_content_ready(page, timeout_seconds=CONTENT_READY_TIMEOUT_SECONDS):
 
 
 def main():
+    if not is_market_open_now():
+        print("Market closed right now (ET) — skipping.")
+        return
+
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 1600, "height": 1200})
