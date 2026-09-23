@@ -705,6 +705,7 @@ def download_known_stocks_data(stocks_tuple):
     raw_data = yf_download_batched(all_symbols, period="2y", interval="1d", progress=False, auto_adjust=True)
 
     ticker_dfs = {}
+    nan_tickers_known = []
     for ticker in stocks_tuple:
         try:
             df = pd.DataFrame({
@@ -716,12 +717,17 @@ def download_known_stocks_data(stocks_tuple):
             }).dropna()
             if not df.empty:
                 ticker_dfs[ticker] = df
+            else:
+                nan_tickers_known.append(ticker)  # NEW
         except Exception:
+            nan_tickers_known.append(ticker)  # NEW
             continue
 
     benchmark_df = pd.DataFrame({
         'Close': raw_data['Close'][benchmark_symbol]
     })#.ffill().dropna()   # <-- was: .dropna()
+
+    st.session_state["nan_tickers_known"] = nan_tickers_known  # NEW
 
     return ticker_dfs, benchmark_df
 
@@ -729,6 +735,7 @@ def download_known_stocks_data(stocks_tuple):
 def download_lime_stocks_data(stocks_tuple):
     raw_data = yf_download_batched(list(stocks_tuple), period="2mo", interval="1d", progress=False, auto_adjust=True)
     ticker_dfs = {}
+    nan_tickers_lime = []  # NEW: tickers that came back empty/NaN from this download
     for ticker in stocks_tuple:
         try:
             df = pd.DataFrame({
@@ -740,8 +747,12 @@ def download_lime_stocks_data(stocks_tuple):
             }).dropna()
             if not df.empty:
                 ticker_dfs[ticker] = df
+            else:
+                nan_tickers_lime.append(ticker)  # NEW
         except Exception:
+            nan_tickers_lime.append(ticker)  # NEW
             continue
+    st.session_state["nan_tickers_lime"] = nan_tickers_lime  # NEW
     return ticker_dfs
 
 @st.cache_data(ttl=3600)
@@ -1178,6 +1189,16 @@ with st.sidebar:
 
     if st.button("Clear Cache"):
         st.cache_data.clear()
+    _nan_known = st.session_state.get("nan_tickers_known", [])
+    _nan_lime  = st.session_state.get("nan_tickers_lime", [])
+    _nan_total = len(_nan_known) + len(_nan_lime)
+    st.caption(f"⚠️ NaN tickers: {_nan_total} total ({len(_nan_known)} known / {len(_nan_lime)} lime)")
+    if _nan_total:
+        with st.expander("NaN ticker list"):
+            if _nan_known:
+                st.write("Known:", ", ".join(_nan_known))
+            if _nan_lime:
+                st.write("Lime:", ", ".join(_nan_lime))
 
 # st.markdown("---")
 #st.markdown(f"#### 📊 Market Breadth")
