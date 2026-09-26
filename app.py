@@ -1490,13 +1490,15 @@ if lime_perf_rows:
         OPEN_SVG_W = OPEN_COL_W + OPEN_PADDING * 2
         OPEN_SVG_H = N_open * OPEN_ROW_H + OPEN_PADDING * 2 + OPEN_HEADER_H
 
-        open_sgt_now_str = datetime.datetime.now(ZoneInfo("Asia/Singapore")).strftime("%Y-%m-%d %H:%M")
+        #open_sgt_now_str = datetime.datetime.now(ZoneInfo("Asia/Singapore")).strftime("%Y-%m-%d %H:%M")
+
+        _nan_total_open = len(st.session_state.get("nan_tickers_known", [])) + len(st.session_state.get("nan_tickers_lime", []))
 
         open_header_html = (
             f'<text x="{OPEN_PADDING + OPEN_LABEL_W // 2 + OPEN_BAR_MAX_PX // 2}" '
             f'y="{OPEN_PADDING + 12}" font-size="10" font-family="Source Sans Pro,sans-serif" '
             f'font-weight="700" fill="#888888" text-anchor="middle" letter-spacing="1">'
-            f'SINCE OPEN ({open_sgt_now_str})</text>'
+            f'SINCE OPEN (NaN: {_nan_total_open})</text>'
         )
 
         def open_row_y(i):
