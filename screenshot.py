@@ -113,9 +113,9 @@ def wait_for_content_ready(page, timeout_seconds=CONTENT_READY_TIMEOUT_SECONDS):
 
 
 def main():
-    if not is_market_open_now():
-        print("Market closed right now (ET) — skipping.")
-        return
+    #if not is_market_open_now():
+    #    print("Market closed right now (ET) — skipping.")
+    #    return
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
