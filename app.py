@@ -1689,6 +1689,10 @@ def compute_premarket_movers(stocks_tuple, relative_threshold=5.0):
         if pm_price is None or prev_close is None or prev_close == 0:
             continue
 
+        # Exclude stocks below $20 (consistent with the rest of the dashboard's price filter)
+        if prev_close < 20:
+            continue
+
         pct_change = (pm_price - prev_close) / prev_close * 100
 
         if spy_pct is not None:
