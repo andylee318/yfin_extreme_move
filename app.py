@@ -1552,3 +1552,206 @@ if lime_perf_rows:
         st.components.v1.html(open_html_out, height=OPEN_SVG_H + 24, scrolling=False)
 else:
     st.info("No Lime Stocks performance data available.")
+
+# ==============================================================================
+# PREMARKET GAP SCANNER (8:30–9:00 AM ET only) — self-contained, does not
+# touch any other section's variables, caches, or state.
+# ==============================================================================
+
+def _in_premarket_scan_window():
+    """True only between 8:30 AM and 9:00 AM US/Eastern."""
+    now_et = datetime.datetime.now(ZoneInfo("America/New_York"))
+    start = now_et.replace(hour=8, minute=30, second=0, microsecond=0)
+    end   = now_et.replace(hour=9, minute=0, second=0, microsecond=0)
+    return start <= now_et <= end
+
+
+@st.cache_data(ttl=300)
+def fetch_premarket_prices(stocks_tuple):
+    """
+    Free/reliable premarket price fetch via yfinance intraday bars with
+    prepost=True. Returns {ticker: last_premarket_price}. Reuses the
+    shared batching helper already defined above to avoid the same
+    thread-explosion risk a raw yf.download() call has on large lists.
+    """
+    try:
+        raw = yf_download_batched(
+            list(stocks_tuple) + ["SPY"],
+            period="1d", interval="1m", prepost=True,
+            progress=False, auto_adjust=False,
+        )
+    except Exception:
+        return {}
+
+    if raw is None or raw.empty:
+        return {}
+
+    prices = {}
+    for ticker in list(stocks_tuple) + ["SPY"]:
+        try:
+            close_series = raw['Close'][ticker].dropna()
+            if not close_series.empty:
+                prices[ticker] = float(close_series.iloc[-1])
+        except Exception:
+            continue
+    return prices
+
+
+@st.cache_data(ttl=300)
+def fetch_previous_closes(stocks_tuple):
+    """Prior regular-session close per ticker, via daily bars (reliable, free)."""
+    try:
+        raw = yf_download_batched(
+            list(stocks_tuple) + ["SPY"],
+            period="5d", interval="1d",
+            progress=False, auto_adjust=False,
+        )
+    except Exception:
+        return {}
+
+    if raw is None or raw.empty:
+        return {}
+
+    closes = {}
+    for ticker in list(stocks_tuple) + ["SPY"]:
+        try:
+            close_series = raw['Close'][ticker].dropna()
+            if len(close_series) >= 1:
+                closes[ticker] = float(close_series.iloc[-1])
+        except Exception:
+            continue
+    return closes
+
+
+@st.cache_data(ttl=300)
+def fetch_finnhub_catalyst(ticker):
+    """
+    Pulls the most recent Finnhub company-news headline as the likely
+    catalyst for a premarket mover. Falls back gracefully if the API key
+    is missing, the request fails, or no news is found — never raises.
+    """
+    finnhub_key = st.secrets.get("FINNHUB_API_KEY")
+    if not finnhub_key:
+        return "No catalyst (FINNHUB_API_KEY missing)"
+
+    today = datetime.date.today()
+    lookback = today - datetime.timedelta(days=2)
+
+    try:
+        resp = requests.get(
+            "https://finnhub.io/api/v1/company-news",
+            params={
+                "symbol": ticker,
+                "from": str(lookback),
+                "to": str(today),
+                "token": finnhub_key,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data and isinstance(data, list):
+            headline = (data[0].get("headline") or "").strip()
+            if headline:
+                return headline
+        return "No catalyst found"
+    except Exception:
+        return "No catalyst found"
+
+
+@st.cache_data(ttl=300)
+def compute_premarket_movers(stocks_tuple, relative_threshold=5.0):
+    """
+    Flags tickers whose premarket move deviates from SPY's premarket move
+    by at least `relative_threshold` percentage points. Using SPY as the
+    reference — instead of a flat % cutoff — keeps this useful even on
+    days the whole market gaps up/down together (e.g. war-ending
+    headlines, surprise Fed moves): only genuine relative outliers get
+    flagged, not the entire tape. Falls back to a flat % move if SPY data
+    is unavailable for some reason.
+    """
+    premarket_prices = fetch_premarket_prices(stocks_tuple)
+    prev_closes = fetch_previous_closes(stocks_tuple)
+
+    if not premarket_prices or not prev_closes:
+        return pd.DataFrame()
+
+    spy_premarket = premarket_prices.get("SPY")
+    spy_prev = prev_closes.get("SPY")
+    spy_pct = None
+    if spy_premarket and spy_prev and spy_prev != 0:
+        spy_pct = (spy_premarket - spy_prev) / spy_prev * 100
+
+    rows = []
+    for ticker in stocks_tuple:
+        pm_price = premarket_prices.get(ticker)
+        prev_close = prev_closes.get(ticker)
+        if pm_price is None or prev_close is None or prev_close == 0:
+            continue
+
+        pct_change = (pm_price - prev_close) / prev_close * 100
+
+        if spy_pct is not None:
+            qualifies = abs(pct_change - spy_pct) >= relative_threshold
+        else:
+            qualifies = abs(pct_change) >= relative_threshold
+
+        if qualifies:
+            rows.append({"Ticker": ticker, "% Change": round(pct_change, 2)})
+
+    if not rows:
+        return pd.DataFrame()
+
+    return pd.DataFrame(rows).sort_values("% Change", ascending=False).reset_index(drop=True)
+
+
+st.markdown("---")
+st.markdown("#### 🌅 Premarket Gap Scanner (8:30–9:00 AM ET)")
+
+if _in_premarket_scan_window():
+    with st.spinner("Scanning premarket movers..."):
+        premarket_df = timed(
+            "compute_premarket_movers",
+            compute_premarket_movers,
+            tuple(KNOWN_STOCKS)
+        )
+
+    if premarket_df.empty:
+        st.info("No significant premarket movers detected right now.")
+    else:
+        with st.spinner("Fetching catalysts from Finnhub..."):
+            catalysts = {
+                sym: timed("fetch_finnhub_catalyst", fetch_finnhub_catalyst, sym)
+                for sym in premarket_df["Ticker"]
+            }
+        premarket_df["Catalyst"] = premarket_df["Ticker"].map(catalysts)
+
+        rows_html = ""
+        for i, row in premarket_df.iterrows():
+            bg = "#262730" if i % 2 == 0 else "#0e1117"
+            pct = row["% Change"]
+            pct_color = "#00FF00" if pct >= 0 else "#FF4B4B"
+            pct_str = f"+{pct:.2f}%" if pct >= 0 else f"{pct:.2f}%"
+            rows_html += (
+                f"<tr style='background-color:{bg};'>"
+                f"<td style='padding:4px 10px;font-weight:bold;color:#ffffff;'>{row['Ticker']}</td>"
+                f"<td style='padding:4px 10px;text-align:right;color:{pct_color};font-weight:bold;'>{pct_str}</td>"
+                f"<td style='padding:4px 10px;color:#cccccc;'>{row['Catalyst']}</td>"
+                f"</tr>"
+            )
+
+        table_html = f"""
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead>
+        <tr style="background-color:#1f77b4; color:white;">
+        <th style="padding:4px 10px; text-align:left;">Ticker</th>
+        <th style="padding:4px 10px; text-align:right;">% Change</th>
+        <th style="padding:4px 10px; text-align:left;">Catalyst</th>
+        </tr>
+        </thead>
+        <tbody>{rows_html}</tbody>
+        </table>
+        """
+        st.markdown(table_html, unsafe_allow_html=True)
+else:
+    st.info("Premarket Gap Scanner only runs between 8:30 AM and 9:00 AM ET.")
