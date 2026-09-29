@@ -1566,7 +1566,7 @@ def _in_premarket_scan_window():
     return start <= now_et <= end
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def fetch_premarket_prices(stocks_tuple):
     """
     Free/reliable premarket price fetch via yfinance intraday bars with
@@ -1597,7 +1597,7 @@ def fetch_premarket_prices(stocks_tuple):
     return prices
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def fetch_previous_closes(stocks_tuple):
     """Prior regular-session close per ticker, via daily bars (reliable, free)."""
     try:
@@ -1623,7 +1623,7 @@ def fetch_previous_closes(stocks_tuple):
     return closes
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def fetch_finnhub_catalyst(ticker):
     """
     Pulls the most recent Finnhub company-news headline as the likely
@@ -1659,7 +1659,7 @@ def fetch_finnhub_catalyst(ticker):
         return "No catalyst found"
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def compute_premarket_movers(stocks_tuple, relative_threshold=5.0):
     """
     Flags tickers whose premarket move deviates from SPY's premarket move
