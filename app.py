@@ -1452,7 +1452,7 @@ def _build_catalyst_html(*catalyst_texts):
 def render_premarket_scanner():
     """Renders ONLY the table (no title). Called inside the right-hand column."""
     if not _in_premarket_scan_window():
-        st.info("Premarket Gap Scanner only runs between 8:30 AM and 9:00 AM ET.")
+        st.info("Premarket Gap Scanner only runs between 8:30 AM and 9:30 AM ET.")
         return
 
     with st.spinner("Scanning premarket movers..."):
