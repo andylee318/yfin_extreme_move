@@ -248,6 +248,7 @@ import datetime
 import base64
 from zoneinfo import ZoneInfo
 from plotly.subplots import make_subplots
+import html
 
 GITHUB_API = "https://api.github.com"
 
@@ -1549,7 +1550,11 @@ if lime_perf_rows:
         </div>
         """
 
-        st.components.v1.html(open_html_out, height=OPEN_SVG_H + 24, scrolling=False)
+        col_open_chart, col_premarket = st.columns([2, 5])
+        with col_open_chart:
+            st.components.v1.html(open_html_out, height=OPEN_SVG_H + 24, scrolling=False)
+        with col_premarket:
+            render_premarket_scanner()
 else:
     st.info("No Lime Stocks performance data available.")
 
@@ -1815,11 +1820,34 @@ def compute_premarket_movers(stocks_tuple, relative_threshold=5.0):
 
     return pd.DataFrame(rows).sort_values("% Change", ascending=False).reset_index(drop=True)
 
+def _build_catalyst_html(*catalyst_texts):
+    """Combine catalysts from all providers into one bullet list.
+    Skips 'No catalyst...' placeholders and Massive status/error strings,
+    and removes exact duplicates. Returns '' if nothing real was found."""
+    seen = set()
+    items = []
+    for txt in catalyst_texts:
+        if not isinstance(txt, str):
+            continue
+        txt = txt.strip()
+        if not txt or txt.lower().startswith("no catalyst") or txt.startswith("Massive"):
+            continue
+        key = txt.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(f"<li style='margin:0 0 2px 0;'>{html.escape(txt)}</li>")
+    if not items:
+        return ""
+    return "<ul style='margin:0;padding-left:16px;'>" + "".join(items) + "</ul>"
 
-st.markdown("---")
-st.markdown("#### 🌅 Premarket Gap Scanner (8:30–9:00 AM ET)")
 
-if _in_premarket_scan_window():
+def render_premarket_scanner():
+    """Renders ONLY the table (no title). Called inside the right-hand column."""
+    if not _in_premarket_scan_window():
+        st.info("Premarket Gap Scanner only runs between 8:30 AM and 9:00 AM ET.")
+        return
+
     with st.spinner("Scanning premarket movers..."):
         premarket_df = timed(
             "compute_premarket_movers",
@@ -1829,56 +1857,49 @@ if _in_premarket_scan_window():
 
     if premarket_df.empty:
         st.info("No significant premarket movers detected right now.")
-    else:
-        with st.spinner("Fetching catalysts (Finnhub + Massive + Alpha Vantage)..."):
-            catalysts = {
-                sym: timed("fetch_finnhub_catalyst", fetch_finnhub_catalyst, sym)
-                for sym in premarket_df["Ticker"]
-            }
-            massive_catalysts = timed(
-                "fetch_massive_catalysts",
-                fetch_massive_catalysts,
-                tuple(premarket_df["Ticker"])
-            )
-            av_catalysts = timed(
-                "fetch_alphavantage_catalysts",
-                fetch_alphavantage_catalysts,
-                tuple(premarket_df["Ticker"])
-            )
-        premarket_df["Catalyst"] = premarket_df["Ticker"].map(catalysts)
-        premarket_df["Catalyst2"] = premarket_df["Ticker"].map(massive_catalysts)
-        premarket_df["Catalyst3"] = premarket_df["Ticker"].map(av_catalysts)
+        return
 
-        rows_html = ""
-        for i, row in premarket_df.iterrows():
-            bg = "#262730" if i % 2 == 0 else "#0e1117"
-            pct = row["% Change"]
-            pct_color = "#00FF00" if pct >= 0 else "#FF4B4B"
-            pct_str = f"+{pct:.2f}%" if pct >= 0 else f"{pct:.2f}%"
-            rows_html += (
-                f"<tr style='background-color:{bg};'>"
-                f"<td style='padding:4px 10px;font-weight:bold;color:#ffffff;'>{row['Ticker']}</td>"
-                f"<td style='padding:4px 10px;text-align:right;color:{pct_color};font-weight:bold;'>{pct_str}</td>"
-                f"<td style='padding:4px 10px;color:#cccccc;'>{row['Catalyst']}</td>"
-                f"<td style='padding:4px 10px;color:#cccccc;'>{row['Catalyst2']}</td>"
-                f"<td style='padding:4px 10px;color:#cccccc;'>{row['Catalyst3']}</td>"
-                f"</tr>"
-            )
+    with st.spinner("Fetching catalysts (Finnhub + Massive + Alpha Vantage)..."):
+        catalysts = {
+            sym: timed("fetch_finnhub_catalyst", fetch_finnhub_catalyst, sym)
+            for sym in premarket_df["Ticker"]
+        }
+        massive_catalysts = timed(
+            "fetch_massive_catalysts",
+            fetch_massive_catalysts,
+            tuple(premarket_df["Ticker"])
+        )
+        av_catalysts = timed(
+            "fetch_alphavantage_catalysts",
+            fetch_alphavantage_catalysts,
+            tuple(premarket_df["Ticker"])
+        )
 
-        table_html = f"""
-        <table style="width:100%; border-collapse:collapse; font-size:13px;">
-        <thead>
-        <tr style="background-color:#1f77b4; color:white;">
-        <th style="padding:4px 10px; text-align:left;">Ticker</th>
-        <th style="padding:4px 10px; text-align:right;">% Change</th>
-        <th style="padding:4px 10px; text-align:left;">Catalyst (Finnhub)</th>
-        <th style="padding:4px 10px; text-align:left;">Catalyst (Massive)</th>
-        <th style="padding:4px 10px; text-align:left;">Catalyst (Alpha Vantage)</th>
-        </tr>
-        </thead>
-        <tbody>{rows_html}</tbody>
-        </table>
-        """
-        st.markdown(table_html, unsafe_allow_html=True)
-else:
-    st.info("Premarket Gap Scanner only runs between 8:30 AM and 9:00 AM ET.")
+    rows_html = ""
+    for i, row in premarket_df.iterrows():
+        sym = row["Ticker"]
+        bg = "#262730" if i % 2 == 0 else "#0e1117"
+        pct = row["% Change"]
+        pct_color = "#00FF00" if pct >= 0 else "#FF4B4B"
+        pct_str = f"+{pct:.2f}%" if pct >= 0 else f"{pct:.2f}%"
+        catalyst_html = _build_catalyst_html(
+            catalysts.get(sym), massive_catalysts.get(sym), av_catalysts.get(sym)
+        )
+        rows_html += (
+            f"<tr style='background-color:{bg};'>"
+            f"<td style='padding:4px 10px;font-weight:bold;color:#ffffff;vertical-align:top;'>{sym}</td>"
+            f"<td style='padding:4px 10px;text-align:right;color:{pct_color};font-weight:bold;vertical-align:top;'>{pct_str}</td>"
+            f"<td style='padding:4px 10px;color:#cccccc;vertical-align:top;'>{catalyst_html}</td>"
+            f"</tr>"
+        )
+
+    table_html = (
+        "<table style='width:100%;border-collapse:collapse;font-size:13px;'>"
+        "<thead><tr style='background-color:#1f77b4;color:white;'>"
+        "<th style='padding:4px 10px;text-align:left;'>Ticker</th>"
+        "<th style='padding:4px 10px;text-align:right;'>% Change</th>"
+        "<th style='padding:4px 10px;text-align:left;'>Catalyst</th>"
+        "</tr></thead>"
+        f"<tbody>{rows_html}</tbody></table>"
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
