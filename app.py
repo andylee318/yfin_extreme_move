@@ -1717,6 +1717,63 @@ def fetch_massive_catalysts(tickers_tuple):
             continue
 
     return {t: out.get(t, "No catalyst found") for t in tickers_tuple}
+
+@st.cache_data(ttl=900)
+def fetch_alphavantage_catalysts(tickers_tuple):
+    """
+    Returns {ticker: headline} from Alpha Vantage NEWS_SENTIMENT.
+    1 bulk call (latest 1000 articles, last 2 days) + up to 2 per-ticker
+    fallbacks. Free tier = 25 calls/day, so results are cached 15 min.
+    Never raises.
+    """
+    key = st.secrets.get("ALPHAVANTAGE_API_KEY")
+    if not key:
+        return {t: "No catalyst (ALPHAVANTAGE_API_KEY missing)" for t in tickers_tuple}
+
+    url = "https://www.alphavantage.co/query"
+    since = (datetime.datetime.utcnow() - datetime.timedelta(days=2)).strftime("%Y%m%dT%H%M")
+    wanted = set(tickers_tuple)
+    out = {}
+    icons = {"Bullish": "🟢 ", "Somewhat-Bullish": "🟢 ",
+             "Bearish": "🔴 ", "Somewhat-Bearish": "🔴 "}
+
+    def _ingest(feed, only=None):
+        for a in feed:  # already newest first (sort=LATEST)
+            title = (a.get("title") or "").strip()
+            if not title:
+                continue
+            for ts in a.get("ticker_sentiment") or []:
+                t = ts.get("ticker")
+                if t not in wanted or t in out or (only and t != only):
+                    continue
+                try:
+                    if float(ts.get("relevance_score", 0)) < 0.3:
+                        continue  # article only mentions it in passing
+                except Exception:
+                    continue
+                out[t] = icons.get(ts.get("ticker_sentiment_label"), "") + title
+
+    def _call(extra):
+        params = {"function": "NEWS_SENTIMENT", "time_from": since,
+                  "sort": "LATEST", "apikey": key, **extra}
+        r = requests.get(url, params=params, timeout=20)
+        r.raise_for_status()
+        j = r.json()
+        # On rate limit / bad key, AV returns 200 with an "Information" or "Note" key
+        return j.get("feed", [])
+
+    try:
+        _ingest(_call({"limit": 1000}))
+    except Exception:
+        pass
+
+    for t in [x for x in tickers_tuple if x not in out][:2]:
+        try:
+            _ingest(_call({"tickers": t, "limit": 20}), only=t)
+        except Exception:
+            continue
+
+    return {t: out.get(t, "No catalyst found") for t in tickers_tuple}
     
 @st.cache_data(ttl=3600)
 def compute_premarket_movers(stocks_tuple, relative_threshold=5.0):
@@ -1782,7 +1839,7 @@ if _in_premarket_scan_window():
     if premarket_df.empty:
         st.info("No significant premarket movers detected right now.")
     else:
-        with st.spinner("Fetching catalysts (Finnhub + Massive)..."):
+        with st.spinner("Fetching catalysts (Finnhub + Massive + Alpha Vantage)..."):
             catalysts = {
                 sym: timed("fetch_finnhub_catalyst", fetch_finnhub_catalyst, sym)
                 for sym in premarket_df["Ticker"]
@@ -1792,8 +1849,14 @@ if _in_premarket_scan_window():
                 fetch_massive_catalysts,
                 tuple(premarket_df["Ticker"])
             )
+            av_catalysts = timed(
+                "fetch_alphavantage_catalysts",
+                fetch_alphavantage_catalysts,
+                tuple(premarket_df["Ticker"])
+            )
         premarket_df["Catalyst"] = premarket_df["Ticker"].map(catalysts)
         premarket_df["Catalyst2"] = premarket_df["Ticker"].map(massive_catalysts)
+        premarket_df["Catalyst3"] = premarket_df["Ticker"].map(av_catalysts)
 
         rows_html = ""
         for i, row in premarket_df.iterrows():
@@ -1807,6 +1870,7 @@ if _in_premarket_scan_window():
                 f"<td style='padding:4px 10px;text-align:right;color:{pct_color};font-weight:bold;'>{pct_str}</td>"
                 f"<td style='padding:4px 10px;color:#cccccc;'>{row['Catalyst']}</td>"
                 f"<td style='padding:4px 10px;color:#cccccc;'>{row['Catalyst2']}</td>"
+                f"<td style='padding:4px 10px;color:#cccccc;'>{row['Catalyst3']}</td>"
                 f"</tr>"
             )
 
@@ -1818,6 +1882,7 @@ if _in_premarket_scan_window():
         <th style="padding:4px 10px; text-align:right;">% Change</th>
         <th style="padding:4px 10px; text-align:left;">Catalyst (Finnhub)</th>
         <th style="padding:4px 10px; text-align:left;">Catalyst (Massive)</th>
+        <th style="padding:4px 10px; text-align:left;">Catalyst (Alpha Vantage)</th>
         </tr>
         </thead>
         <tbody>{rows_html}</tbody>
