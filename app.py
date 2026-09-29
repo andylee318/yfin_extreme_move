@@ -1562,7 +1562,7 @@ def _in_premarket_scan_window():
     """True only between 8:30 AM and 9:00 AM US/Eastern."""
     now_et = datetime.datetime.now(ZoneInfo("America/New_York"))
     start = now_et.replace(hour=8, minute=30, second=0, microsecond=0)
-    end   = now_et.replace(hour=9, minute=0, second=0, microsecond=0)
+    end   = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
     return start <= now_et <= end
 
 
@@ -1658,7 +1658,66 @@ def fetch_finnhub_catalyst(ticker):
     except Exception:
         return "No catalyst found"
 
+@st.cache_data(ttl=900)
+def fetch_massive_catalysts(tickers_tuple):
+    """
+    Returns {ticker: headline} from Massive (formerly Polygon.io) news.
+    1 bulk call for the last 2 days, then up to 4 per-ticker fallbacks
+    for movers the bulk call didn't cover. Never raises.
+    """
+    key = st.secrets.get("MASSIVE_API_KEY")
+    if not key:
+        return {t: "No catalyst (MASSIVE_API_KEY missing)" for t in tickers_tuple}
 
+    base = "https://api.massive.com/v2/reference/news"
+    since = (datetime.datetime.utcnow() - datetime.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    wanted = set(tickers_tuple)
+    out = {}
+
+    def _label(article, ticker):
+        title = (article.get("title") or "").strip()
+        sent = None
+        for ins in article.get("insights") or []:
+            if ins.get("ticker") == ticker:
+                sent = ins.get("sentiment")
+        icon = {"positive": "🟢 ", "negative": "🔴 "}.get(sent, "")
+        return f"{icon}{title}" if title else None
+
+    # 1) One bulk call, newest first
+    try:
+        r = requests.get(base, params={
+            "published_utc.gte": since, "order": "desc",
+            "sort": "published_utc", "limit": 1000, "apiKey": key,
+        }, timeout=20)
+        r.raise_for_status()
+        for a in r.json().get("results", []):
+            for t in a.get("tickers") or []:
+                if t in wanted and t not in out:
+                    lbl = _label(a, t)
+                    if lbl:
+                        out[t] = lbl
+    except Exception:
+        pass
+
+    # 2) Per-ticker fallback, capped to respect the free-tier rate limit
+    missing = [t for t in tickers_tuple if t not in out][:4]
+    for t in missing:
+        try:
+            r = requests.get(base, params={
+                "ticker": t, "published_utc.gte": since, "order": "desc",
+                "sort": "published_utc", "limit": 1, "apiKey": key,
+            }, timeout=10)
+            r.raise_for_status()
+            res = r.json().get("results", [])
+            if res:
+                lbl = _label(res[0], t)
+                if lbl:
+                    out[t] = lbl
+        except Exception:
+            continue
+
+    return {t: out.get(t, "No catalyst found") for t in tickers_tuple}
+    
 @st.cache_data(ttl=3600)
 def compute_premarket_movers(stocks_tuple, relative_threshold=5.0):
     """
@@ -1723,12 +1782,18 @@ if _in_premarket_scan_window():
     if premarket_df.empty:
         st.info("No significant premarket movers detected right now.")
     else:
-        with st.spinner("Fetching catalysts from Finnhub..."):
+        with st.spinner("Fetching catalysts (Finnhub + Massive)..."):
             catalysts = {
                 sym: timed("fetch_finnhub_catalyst", fetch_finnhub_catalyst, sym)
                 for sym in premarket_df["Ticker"]
             }
+            massive_catalysts = timed(
+                "fetch_massive_catalysts",
+                fetch_massive_catalysts,
+                tuple(premarket_df["Ticker"])
+            )
         premarket_df["Catalyst"] = premarket_df["Ticker"].map(catalysts)
+        premarket_df["Catalyst2"] = premarket_df["Ticker"].map(massive_catalysts)
 
         rows_html = ""
         for i, row in premarket_df.iterrows():
@@ -1741,6 +1806,7 @@ if _in_premarket_scan_window():
                 f"<td style='padding:4px 10px;font-weight:bold;color:#ffffff;'>{row['Ticker']}</td>"
                 f"<td style='padding:4px 10px;text-align:right;color:{pct_color};font-weight:bold;'>{pct_str}</td>"
                 f"<td style='padding:4px 10px;color:#cccccc;'>{row['Catalyst']}</td>"
+                f"<td style='padding:4px 10px;color:#cccccc;'>{row['Catalyst2']}</td>"
                 f"</tr>"
             )
 
