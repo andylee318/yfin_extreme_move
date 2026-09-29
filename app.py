@@ -1816,7 +1816,8 @@ if _in_premarket_scan_window():
         <tr style="background-color:#1f77b4; color:white;">
         <th style="padding:4px 10px; text-align:left;">Ticker</th>
         <th style="padding:4px 10px; text-align:right;">% Change</th>
-        <th style="padding:4px 10px; text-align:left;">Catalyst</th>
+        <th style="padding:4px 10px; text-align:left;">Catalyst (Finnhub)</th>
+        <th style="padding:4px 10px; text-align:left;">Catalyst (Massive)</th>
         </tr>
         </thead>
         <tbody>{rows_html}</tbody>
