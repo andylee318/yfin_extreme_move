@@ -731,7 +731,7 @@ def download_known_stocks_data(stocks_tuple):
 
     return ticker_dfs, benchmark_df
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=900)
 def download_lime_stocks_data(stocks_tuple):
     raw_data = yf_download_batched(list(stocks_tuple), period="2mo", interval="1d", progress=False, auto_adjust=True)
     ticker_dfs = {}
