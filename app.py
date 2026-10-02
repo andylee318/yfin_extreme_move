@@ -1512,6 +1512,180 @@ def render_premarket_scanner():
     )
     st.markdown(table_html, unsafe_allow_html=True)
 
+# ======================= POST-MARKET SCANNER (additive, independent) =======================
+def pm2_in_post_window():
+    """True Mon-Fri 16:00-20:00 ET (7am SGT = 19:00 EDT / 18:00 EST, always inside)."""
+    now_et = datetime.datetime.now(ZoneInfo("America/New_York"))
+    if now_et.weekday() >= 5:
+        return False
+    return 16 * 60 <= now_et.hour * 60 + now_et.minute < 20 * 60
+
+
+@st.cache_data(ttl=300)
+def pm2_fetch_snapshot(stocks_tuple):
+    """{ticker: {reg_close, last, ext_vol}} from 1-min bars incl. extended hours.
+    reg_close = last print before 16:00 ET, last = latest after-hours print."""
+    try:
+        raw = yf_download_batched(
+            list(stocks_tuple) + ["SPY"],
+            period="1d", interval="1m", prepost=True,
+            progress=False, auto_adjust=False,
+        )
+    except Exception:
+        return {}
+    if raw is None or raw.empty:
+        return {}
+
+    out = {}
+    for t in list(stocks_tuple) + ["SPY"]:
+        try:
+            c = raw["Close"][t].dropna()
+            if c.empty:
+                continue
+            v = raw["Volume"][t].reindex(c.index).fillna(0)
+            idx = c.index.tz_localize("UTC") if c.index.tz is None else c.index
+            et = idx.tz_convert("America/New_York")
+            mins = (et.hour * 60 + et.minute).to_numpy()
+            reg = c[(mins >= 570) & (mins < 960)]
+            ext = c[mins >= 960]
+            if reg.empty or ext.empty:
+                continue
+            out[t] = {
+                "reg_close": float(reg.iloc[-1]),
+                "last": float(ext.iloc[-1]),
+                "ext_vol": float(v[mins >= 960].sum()),
+            }
+        except Exception:
+            continue
+    return out
+
+
+def pm2_compute_movers(stocks_tuple, relative_threshold=3.0, min_ext_volume=50_000):
+    """Move vs today's 4pm close, relative to SPY's after-hours move.
+    Thresholds are starting guesses - tune after a few runs."""
+    snap = pm2_fetch_snapshot(stocks_tuple)
+    if not snap:
+        return pd.DataFrame()
+    spy = snap.get("SPY")
+    spy_pct = ((spy["last"] / spy["reg_close"] - 1) * 100) if spy and spy["reg_close"] else None
+
+    rows = []
+    for t in stocks_tuple:
+        s = snap.get(t)
+        if not s or s["reg_close"] < 20:
+            continue
+        pct = (s["last"] / s["reg_close"] - 1) * 100
+        move = abs(pct - spy_pct) if spy_pct is not None else abs(pct)
+        if move >= relative_threshold and s["ext_vol"] >= min_ext_volume:
+            rows.append({"Ticker": t, "% Change": round(pct, 2), "Ext Vol": int(s["ext_vol"])})
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("% Change", ascending=False).reset_index(drop=True)
+
+
+@st.cache_data(ttl=1800)
+def pm2_fetch_earnings_today():
+    """{ticker: 'after close'|'before open'|...} from Finnhub's earnings calendar.
+    Returns {} on any failure (no key, plan limits) so the table still renders."""
+    key = st.secrets.get("FINNHUB_API_KEY")
+    if not key:
+        return {}
+    today = datetime.datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    try:
+        r = requests.get(
+            "https://finnhub.io/api/v1/calendar/earnings",
+            params={"from": today, "to": today, "token": key}, timeout=15,
+        )
+        r.raise_for_status()
+        label = {"amc": "after close", "bmo": "before open", "dmh": "during hours"}
+        return {e["symbol"]: label.get(e.get("hour"), "today")
+                for e in r.json().get("earningsCalendar", []) if e.get("symbol")}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=300)
+def pm2_fetch_latest_headline(ticker):
+    """Newest Finnhub headline WITH its ET timestamp, so you can see whether it
+    came out after the 4pm close. Never raises."""
+    key = st.secrets.get("FINNHUB_API_KEY")
+    if not key:
+        return ""
+    today = datetime.date.today()
+    try:
+        r = requests.get(
+            "https://finnhub.io/api/v1/company-news",
+            params={"symbol": ticker, "from": str(today - datetime.timedelta(days=2)),
+                    "to": str(today), "token": key}, timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if not data or not isinstance(data, list):
+            return ""
+        d0 = sorted(data, key=lambda d: d.get("datetime", 0), reverse=True)[0]
+        title = (d0.get("headline") or "").strip()
+        if not title:
+            return ""
+        ts = datetime.datetime.fromtimestamp(
+            d0.get("datetime", 0), ZoneInfo("America/New_York")
+        ).strftime("%b %d %I:%M%p")
+        return f"[{ts} ET] {title}"
+    except Exception:
+        return ""
+
+
+def render_postmarket_scanner():
+    """Draws nothing outside 16:00-20:00 ET, so it never clashes with the premarket panel."""
+    if not pm2_in_post_window():
+        return
+
+    st.markdown("**Post-market movers (vs 4pm close)**")
+    with st.spinner("Scanning post-market movers..."):
+        df = timed("pm2_compute_movers", pm2_compute_movers, tuple(KNOWN_STOCKS))
+
+    if df.empty:
+        st.info("No significant post-market movers detected right now.")
+        return
+
+    syms = tuple(df["Ticker"])
+    with st.spinner("Fetching post-market catalysts..."):
+        latest = {s: pm2_fetch_latest_headline(s) for s in syms}
+        massive = timed("fetch_massive_catalysts", fetch_massive_catalysts, syms)
+        av = timed("fetch_alphavantage_catalysts", fetch_alphavantage_catalysts, syms)
+        earnings = pm2_fetch_earnings_today()
+
+    rows_html = ""
+    for i, row in df.iterrows():
+        sym = row["Ticker"]
+        bg = "#262730" if i % 2 == 0 else "#0e1117"
+        pct = row["% Change"]
+        pct_color = "#00FF00" if pct >= 0 else "#FF4B4B"
+        pct_str = f"+{pct:.2f}%" if pct >= 0 else f"{pct:.2f}%"
+        cat_html = _build_catalyst_html(latest.get(sym), massive.get(sym), av.get(sym))
+        if sym in earnings:
+            cat_html = (f"<b style='color:#FFD166;'>📅 Earnings ({earnings[sym]})</b>") + cat_html
+        rows_html += (
+            f"<tr style='background-color:{bg};'>"
+            f"<td style='padding:4px 10px;font-weight:bold;color:#ffffff;vertical-align:top;'>{sym}</td>"
+            f"<td style='padding:4px 10px;text-align:right;color:{pct_color};font-weight:bold;vertical-align:top;'>{pct_str}</td>"
+            f"<td style='padding:4px 10px;text-align:right;color:#cccccc;vertical-align:top;'>{int(row['Ext Vol']):,}</td>"
+            f"<td style='padding:4px 10px;color:#cccccc;vertical-align:top;'>{cat_html}</td>"
+            f"</tr>"
+        )
+
+    st.markdown(
+        "<table style='width:100%;border-collapse:collapse;font-size:13px;'>"
+        "<thead><tr style='background-color:#1f77b4;color:white;'>"
+        "<th style='padding:4px 10px;text-align:left;'>Ticker</th>"
+        "<th style='padding:4px 10px;text-align:right;'>% vs 4pm</th>"
+        "<th style='padding:4px 10px;text-align:right;'>AH Vol</th>"
+        "<th style='padding:4px 10px;text-align:left;'>Catalyst</th>"
+        "</tr></thead>"
+        f"<tbody>{rows_html}</tbody></table>",
+        unsafe_allow_html=True,
+    )
+# ===================== END POST-MARKET SCANNER (additive) =====================
+
 # 3. Sidebar Inputs
 with st.sidebar:
     st.header("Settings")
@@ -1902,6 +2076,7 @@ if lime_perf_rows:
             st.components.v1.html(open_html_out, height=OPEN_SVG_H + 24, scrolling=False)
         with col_premarket:
             render_premarket_scanner()
+            render_postmarket_scanner()
 else:
     st.info("No Lime Stocks performance data available.")
 
