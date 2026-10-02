@@ -1686,6 +1686,43 @@ def render_postmarket_scanner():
     )
 # ===================== END POST-MARKET SCANNER (additive) =====================
 
+
+@st.cache_data(ttl=300)
+def pm2_fetch_premarket_pct(stocks_tuple):
+    """{ticker: % move vs prior regular close} using the latest pre-9:30 ET print today.
+    Own fetch (not fetch_premarket_prices) because LIME_STOCKS already contains SPY and that
+    helper appends SPY again, which can make the SPY column ambiguous. Symbols are de-duplicated."""
+    syms = list(dict.fromkeys(stocks_tuple))
+    out = {}
+    try:
+        intra = yf_download_batched(syms, period="1d", interval="1m", prepost=True,
+                                    progress=False, auto_adjust=False)
+        daily = yf_download_batched(syms, period="5d", interval="1d",
+                                    progress=False, auto_adjust=False)
+    except Exception:
+        return out
+    if intra is None or intra.empty or daily is None or daily.empty:
+        return out
+
+    today_et = datetime.datetime.now(ZoneInfo("America/New_York")).date()
+    for t in syms:
+        try:
+            c = intra["Close"][t].dropna()
+            if c.empty:
+                continue
+            idx = c.index.tz_localize("UTC") if c.index.tz is None else c.index
+            et = idx.tz_convert("America/New_York")
+            mins = (et.hour * 60 + et.minute).to_numpy()
+            pre = c[[(m < 570 and d == today_et) for m, d in zip(mins, et.date)]]   # before 9:30 ET today
+            dc = daily["Close"][t].dropna()
+            dc = dc[[d.date() < today_et for d in dc.index]]                         # prior completed sessions only
+            if pre.empty or dc.empty:
+                continue
+            out[t] = (float(pre.iloc[-1]) / float(dc.iloc[-1]) - 1) * 100
+        except Exception:
+            continue
+    return out
+
 # 3. Sidebar Inputs
 with st.sidebar:
     st.header("Settings")
@@ -1985,16 +2022,29 @@ if lime_perf_rows:
     # today's Close vs yesterday's Close)
     # ============================================================
     open_pct_rows = []
-    for sym in LIME_STOCKS:
-        df_sym = lime_ticker_dfs.get(sym)
-        if df_sym is None or len(df_sym) < 1:
-            continue
-        o_today = df_sym['Open'].iloc[-1]
-        c_today = df_sym['Close'].iloc[-1]
-        if pd.isna(o_today) or pd.isna(c_today) or o_today == 0:
-            continue
-        pct_open = round((c_today - o_today) / o_today * 100, 2)
-        open_pct_rows.append({"sym": sym, "pct_open": pct_open})
+
+    # Same window as the premarket catalyst table (8:30-9:30 AM ET): bars show the PRE-MARKET move
+    # vs the prior close. Outside it (or if no premarket data came back) -> % since today's open.
+    open_chart_is_premarket = False
+    if _in_premarket_scan_window():
+        _pm_pct = pm2_fetch_premarket_pct(tuple(LIME_STOCKS))
+        for sym in LIME_STOCKS:
+            if sym in _pm_pct:
+                open_pct_rows.append({"sym": sym, "pct_open": round(_pm_pct[sym], 2)})
+        open_chart_is_premarket = bool(open_pct_rows)
+
+    if not open_chart_is_premarket:
+        open_pct_rows = []
+        for sym in LIME_STOCKS:
+            df_sym = lime_ticker_dfs.get(sym)
+            if df_sym is None or len(df_sym) < 1:
+                continue
+            o_today = df_sym['Open'].iloc[-1]
+            c_today = df_sym['Close'].iloc[-1]
+            if pd.isna(o_today) or pd.isna(c_today) or o_today == 0:
+                continue
+            pct_open = round((c_today - o_today) / o_today * 100, 2)
+            open_pct_rows.append({"sym": sym, "pct_open": pct_open})
 
     if open_pct_rows:
         OPEN_ROW_H      = 21
@@ -2020,7 +2070,7 @@ if lime_perf_rows:
             f'<text x="{OPEN_PADDING + OPEN_LABEL_W // 2 + OPEN_BAR_MAX_PX // 2}" '
             f'y="{OPEN_PADDING + 12}" font-size="10" font-family="Source Sans Pro,sans-serif" '
             f'font-weight="700" fill="#888888" text-anchor="middle" letter-spacing="1">'
-            f'SINCE OPEN (NaN: {_nan_total_open})</text>'
+            f'{"PRE-MARKET" if open_chart_is_premarket else "SINCE OPEN"} (NaN: {_nan_total_open})</text>'
         )
 
         def open_row_y(i):
