@@ -33,7 +33,20 @@ CONTENT_READY_TIMEOUT_SECONDS = 60
 
 MARKET_TZ = ZoneInfo("America/New_York")
 
+def _screenshot_caption():
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    start = now_et.replace(hour=8, minute=30, second=0, microsecond=0)
+    end   = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    if now_et.weekday() < 5 and start <= now_et < end:
+        return "pre-market"
 
+    now_sg = datetime.now(ZoneInfo("Asia/Singapore"))
+    start_sg = now_sg.replace(hour=6, minute=30, second=0, microsecond=0)
+    end_sg   = now_sg.replace(hour=7, minute=30, second=0, microsecond=0)
+    if 1 <= now_sg.weekday() <= 5 and start_sg <= now_sg < end_sg:
+        return "post-market"
+    return "Daily screenshot"
+  
 def is_market_open_now() -> bool:
     """True on NYSE trading hours (weekday 9:30am-4:00pm ET).
     Does NOT account for market holidays."""
@@ -137,7 +150,7 @@ def main():
         img_bytes = page.screenshot(full_page=True)
         browser.close()
 
-    send_photo(img_bytes, "Daily screenshot")
+    send_photo(img_bytes, _screenshot_caption())
 
 
 if __name__ == "__main__":
