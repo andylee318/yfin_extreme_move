@@ -125,6 +125,15 @@ def wait_for_content_ready(page, timeout_seconds=CONTENT_READY_TIMEOUT_SECONDS):
         print(f"Running-indicator check skipped due to: {e}")
 
 
+def has_blocking_text(page) -> bool:
+    """True if 'Scanning' or 'Running' is still visible on the page."""
+    for word in ("Scanning", "Running"):
+        if page.get_by_text(word, exact=False).count() > 0:
+            print(f"Blocking text '{word}' still present -- skipping screenshot/send.")
+            return True
+    return False
+
+
 def main():
     #if not is_market_open_now():
     #    print("Market closed right now (ET) — skipping.")
@@ -146,6 +155,10 @@ def main():
 
         print(f"Waiting {WAIT_AFTER_LOAD_SECONDS}s for the app to finish rendering...")
         time.sleep(WAIT_AFTER_LOAD_SECONDS)
+
+        if has_blocking_text(page):      # <-- add
+            browser.close()              # <-- add
+            return                       # <-- add
 
         img_bytes = page.screenshot(full_page=True)
         browser.close()
