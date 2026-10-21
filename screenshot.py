@@ -126,8 +126,8 @@ def wait_for_content_ready(page, timeout_seconds=CONTENT_READY_TIMEOUT_SECONDS):
 
 
 def has_blocking_text(page) -> bool:
-    """True if 'Scanning' or 'Running' is still visible on the page."""
-    for word in ("Scanning", "Running"):
+    """True if 'Scanning', 'Running' or 'Fetching' is still visible on the page."""
+    for word in ("Scanning", "Running", "Fetching"):
         if page.get_by_text(word, exact=False).count() > 0:
             print(f"Blocking text '{word}' still present -- skipping screenshot/send.")
             return True
