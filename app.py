@@ -643,9 +643,9 @@ LIME_STOCKS = [
     'CIBR', 'COPX', 'DRAM', 'GDX', 'IBIT', 'IGV', 'IHI',
     'IPAY', 'ITB', 'JETS', 'KRE', 'KWEB', 'LIT', 'MAGS',
     'PBW', 'REMX', 'SHLD', 'SIL', 'SLX', 'SMH', 'TAN',
-    'UFO', 'URA', 'USO', 'VTV', 'VUG', 'WGMI', 'XBI',
+    'UFO', 'URA', 'USO', 'VTV', 'VUG', 'NCLD', 'XBI',
     'XME', 'XRT', 'FOTO', 'SPY', 'QQQ', 'RSP'
-]#NCLD
+]
 
 LIME_STOCKS1 = [
     'IHF', 'CIBR', 'COPX', 'DRAM', 'GDX', 'IBIT', 'IGV', 'IHI', 'EWY',
@@ -1723,6 +1723,41 @@ def pm2_fetch_premarket_pct(stocks_tuple):
             continue
     return out
 
+@st.cache_data(ttl=300)
+def pm2_fetch_postmarket_pct(stocks_tuple):
+    """{ticker: % move vs today's 4pm ET close} using the latest post-16:00 ET print today.
+    Own fetch (de-duplicated symbols) for the same reason pm2_fetch_premarket_pct uses its
+    own fetch instead of reusing a shared helper: LIME_STOCKS already contains SPY, and
+    appending SPY again elsewhere can make the SPY column ambiguous."""
+    syms = list(dict.fromkeys(stocks_tuple))
+    out = {}
+    try:
+        intra = yf_download_batched(syms, period="1d", interval="1m", prepost=True,
+                                    progress=False, auto_adjust=False)
+    except Exception:
+        return out
+    if intra is None or intra.empty:
+        return out
+
+    today_et = datetime.datetime.now(ZoneInfo("America/New_York")).date()
+    for t in syms:
+        try:
+            c = intra["Close"][t].dropna()
+            if c.empty:
+                continue
+            idx = c.index.tz_localize("UTC") if c.index.tz is None else c.index
+            et = idx.tz_convert("America/New_York")
+            mins = (et.hour * 60 + et.minute).to_numpy()
+            dates = et.date
+            reg = c[[(570 <= m < 960 and d == today_et) for m, d in zip(mins, dates)]]   # 9:30-16:00 ET today
+            ext = c[[(m >= 960 and d == today_et) for m, d in zip(mins, dates)]]          # after 16:00 ET today
+            if reg.empty or ext.empty:
+                continue
+            out[t] = (float(ext.iloc[-1]) / float(reg.iloc[-1]) - 1) * 100
+        except Exception:
+            continue
+    return out
+
 # 3. Sidebar Inputs
 with st.sidebar:
     st.header("Settings")
@@ -2026,14 +2061,21 @@ if lime_perf_rows:
     # Same window as the premarket catalyst table (8:30-9:30 AM ET): bars show the PRE-MARKET move
     # vs the prior close. Outside it (or if no premarket data came back) -> % since today's open.
     open_chart_is_premarket = False
+    open_chart_is_postmarket = False
     if _in_premarket_scan_window():
         _pm_pct = pm2_fetch_premarket_pct(tuple(LIME_STOCKS))
         for sym in LIME_STOCKS:
             if sym in _pm_pct:
                 open_pct_rows.append({"sym": sym, "pct_open": round(_pm_pct[sym], 2)})
         open_chart_is_premarket = bool(open_pct_rows)
+    elif pm2_in_post_window():
+        _pom_pct = pm2_fetch_postmarket_pct(tuple(LIME_STOCKS))
+        for sym in LIME_STOCKS:
+            if sym in _pom_pct:
+                open_pct_rows.append({"sym": sym, "pct_open": round(_pom_pct[sym], 2)})
+        open_chart_is_postmarket = bool(open_pct_rows)
 
-    if not open_chart_is_premarket:
+    if not open_chart_is_premarket and not open_chart_is_postmarket:
         open_pct_rows = []
         for sym in LIME_STOCKS:
             df_sym = lime_ticker_dfs.get(sym)
@@ -2070,7 +2112,7 @@ if lime_perf_rows:
             f'<text x="{OPEN_PADDING + OPEN_LABEL_W // 2 + OPEN_BAR_MAX_PX // 2}" '
             f'y="{OPEN_PADDING + 12}" font-size="10" font-family="Source Sans Pro,sans-serif" '
             f'font-weight="700" fill="#888888" text-anchor="middle" letter-spacing="1">'
-            f'{"PRE-MARKET" if open_chart_is_premarket else "SINCE OPEN"} (NaN: {_nan_total_open})</text>'
+            f'{"PRE-MARKET" if open_chart_is_premarket else "POST-MARKET" if open_chart_is_postmarket else "SINCE OPEN"} (NaN: {_nan_total_open})</text>'
         )
 
         def open_row_y(i):
