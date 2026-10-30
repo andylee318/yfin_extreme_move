@@ -1426,7 +1426,7 @@ def compute_premarket_movers(stocks_tuple, relative_threshold=5.0):
     if not rows:
         return pd.DataFrame()
 
-    return pd.DataFrame(rows).sort_values("% Change", ascending=False).reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values("% Change", key=abs, ascending=False).reset_index(drop=True)
 
 def _build_catalyst_html(*catalyst_texts):
     """Combine catalysts from all providers into one bullet list.
@@ -1580,7 +1580,7 @@ def pm2_compute_movers(stocks_tuple, relative_threshold=3.0, min_ext_volume=50_0
             rows.append({"Ticker": t, "% Change": round(pct, 2), "Ext Vol": int(s["ext_vol"])})
     if not rows:
         return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("% Change", ascending=False).reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values("% Change", key=abs, ascending=False).reset_index(drop=True)
 
 
 @st.cache_data(ttl=1800)
