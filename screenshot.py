@@ -45,7 +45,7 @@ def _screenshot_caption():
     end_sg   = now_sg.replace(hour=7, minute=30, second=0, microsecond=0)
     if 1 <= now_sg.weekday() <= 5 and start_sg <= now_sg < end_sg:
         return "post-market"
-    return "Daily screenshot"
+    return "Regular Trading Hour"
   
 def is_market_open_now() -> bool:
     """True on NYSE trading hours (weekday 9:30am-4:00pm ET).
