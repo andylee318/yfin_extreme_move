@@ -23,11 +23,14 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 # and rendering everything, before taking the screenshot.
 WAIT_AFTER_LOAD_SECONDS = 45
 
-# Max time (seconds) to wait for a sleeping app to wake back up.
-WAKE_UP_TIMEOUT_SECONDS = 90
+# Max time (seconds) to wait for a sleeping app to wake up AND finish booting.
+# A cold start on Streamlit Community Cloud ("Your app is in the oven") can
+# take well over a minute, so this has to be generous.
+APP_BOOT_TIMEOUT_SECONDS = 180
 
-# Max time (seconds) to wait for actual Streamlit app content to appear.
-CONTENT_READY_TIMEOUT_SECONDS = 60
+# Max time (seconds) to wait for actual Streamlit app content to appear once
+# the app frame/container exists.
+CONTENT_READY_TIMEOUT_SECONDS = 90
 
 # Telegram send retries (network blips between the GitHub runner and
 # api.telegram.org, e.g. "Connection reset by peer", are usually transient).
@@ -36,6 +39,7 @@ TELEGRAM_MAX_ATTEMPTS = 5
 # On *.streamlit.app the real app is rendered inside this iframe, so
 # selectors/text checks must look inside it, not on the outer page.
 STREAMLIT_IFRAME = 'iframe[title="streamlitApp"]'
+APP_CONTAINER = '[data-testid="stAppViewContainer"]'
 
 MARKET_TZ = ZoneInfo("America/New_York")
 
@@ -108,47 +112,58 @@ def send_photo(image_bytes, caption, max_attempts=TELEGRAM_MAX_ATTEMPTS) -> bool
     return False
 
 
-def get_app_scope(page):
-    """Return the frame that holds the Streamlit app (or the page itself if
-    the app isn't wrapped in an iframe)."""
-    try:
-        page.wait_for_selector(STREAMLIT_IFRAME, timeout=20000)
-        log("Found Streamlit app iframe.")
-        return page.frame_locator(STREAMLIT_IFRAME)
-    except Exception:
-        log("No Streamlit iframe found; using top-level page.")
-        return page
+def wait_for_app_scope(page, timeout_seconds=APP_BOOT_TIMEOUT_SECONDS):
+    """Wake the app if it is asleep, then wait until the Streamlit app is
+    actually mounted. Returns the scope to query (the iframe's frame_locator,
+    or the page itself if the app is not wrapped in an iframe), or None if
+    nothing showed up before the timeout.
 
+    This is one polling loop on purpose. Previously the wake-up check returned
+    as soon as the "gone to sleep" text vanished, but the app then spends a
+    while booting ("Your app is in the oven") before the iframe exists. A
+    short iframe wait followed by a silent fall-back to the top-level page
+    meant we then looked for the app container on the outer page, where it
+    never exists -- so we always timed out."""
+    wake_btn = page.get_by_role("button", name="get this app back up", exact=False)
+    deadline = time.time() + timeout_seconds
+    last_click = 0.0
+    last_state = None
 
-def wait_for_wake_up(page, timeout_seconds=WAKE_UP_TIMEOUT_SECONDS):
-    """Click the 'get this app back up' button if the app is asleep, then
-    wait until the sleep screen is gone."""
-    try:
-        wake_btn = page.get_by_role("button", name="get this app back up", exact=False)
+    def note(state):
+        nonlocal last_state
+        if state != last_state:
+            log(state)
+            last_state = state
+
+    while time.time() < deadline:
         try:
-            wake_btn.first.wait_for(state="visible", timeout=8000)
-        except Exception:
-            return  # not asleep
+            if page.locator(STREAMLIT_IFRAME).count() > 0:
+                note("Found Streamlit app iframe.")
+                return page.frame_locator(STREAMLIT_IFRAME)
+            if page.locator(APP_CONTAINER).count() > 0:
+                note("Found Streamlit app container on the top-level page.")
+                return page
 
-        log("App was asleep -- clicking wake-up button.")
-        wake_btn.first.click()
+            if wake_btn.count() > 0:
+                # Re-click every 20s in case the first click didn't register.
+                if time.time() - last_click > 20:
+                    note("App is asleep -- clicking wake-up button.")
+                    wake_btn.first.click()
+                    last_click = time.time()
+            else:
+                note("Waiting for the app to boot...")
+        except Exception as e:
+            log(f"Boot check hiccup (will retry): {e}")
+        time.sleep(2)
 
-        deadline = time.time() + timeout_seconds
-        while time.time() < deadline:
-            if page.get_by_text("This app has gone to sleep", exact=False).count() == 0:
-                log("App woke up.")
-                return
-            time.sleep(2)
-
-        log("Timed out waiting for wake-up; proceeding anyway.")
-    except Exception as e:
-        log(f"Wake-up check skipped due to: {e}")
+    log(f"App did not appear within {timeout_seconds}s.")
+    return None
 
 
 def wait_for_content_ready(scope, timeout_seconds=CONTENT_READY_TIMEOUT_SECONDS) -> bool:
     """Wait for the app container, then for the 'Running...' indicator to clear."""
     try:
-        scope.locator('[data-testid="stAppViewContainer"]').first.wait_for(
+        scope.locator(APP_CONTAINER).first.wait_for(
             state="visible", timeout=timeout_seconds * 1000
         )
     except Exception as e:
@@ -177,6 +192,20 @@ def has_blocking_text(scope) -> bool:
     return False
 
 
+def save_debug(page, reason):
+    """Keep a screenshot and a bit of page text so a failed run is diagnosable."""
+    try:
+        page.screenshot(path="debug_not_ready.png", full_page=True)
+    except Exception as e:
+        log(f"Could not save debug screenshot: {e}")
+    try:
+        text = page.inner_text("body")[:500].replace("\n", " | ")
+        log(f"Page text at failure: {text}")
+    except Exception:
+        pass
+    log(f"{reason} Saved debug_not_ready.png and exiting.")
+
+
 def main():
     #if not is_market_open_now():
     #    log("Market closed right now (ET) — skipping.")
@@ -189,15 +218,16 @@ def main():
         log(f"Opening {APP_URL} ...")
         page.goto(APP_URL, wait_until="domcontentloaded", timeout=60000)
 
-        wait_for_wake_up(page)
-
-        scope = get_app_scope(page)
+        scope = wait_for_app_scope(page)
+        if scope is None:
+            save_debug(page, "App never finished booting.")
+            browser.close()
+            sys.exit(1)
 
         log("Waiting for app content to be ready...")
         if not wait_for_content_ready(scope):
             # App never rendered -- don't send a blank/loading screenshot.
-            page.screenshot(path="debug_not_ready.png", full_page=True)
-            log("App content never appeared; saved debug_not_ready.png and exiting.")
+            save_debug(page, "App content never appeared.")
             browser.close()
             sys.exit(1)
 
