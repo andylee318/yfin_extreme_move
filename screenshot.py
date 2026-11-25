@@ -19,9 +19,14 @@ APP_URL = "https://yfinextrememove-2ylefqmq9wk3h3rqrrbfoe.streamlit.app/"
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-# How long to wait after the page loads for Streamlit to finish computing
-# and rendering everything, before taking the screenshot.
-WAIT_AFTER_LOAD_SECONDS = 45
+# Max time (seconds) to wait for the app to finish fetching and computing.
+# The pre-/post-market scanners call several news APIs one after another, so a
+# run with an empty cache can take a few minutes.
+LOADING_TIMEOUT_SECONDS = 480
+
+# The app must show no loading indicator for this long in a row before it counts
+# as finished (there are short gaps between one spinner and the next).
+QUIET_SECONDS = 15
 
 # Max time (seconds) to wait for a sleeping app to wake up AND finish booting.
 # A cold start on Streamlit Community Cloud ("Your app is in the oven") can
@@ -40,6 +45,21 @@ TELEGRAM_MAX_ATTEMPTS = 5
 # selectors/text checks must look inside it, not on the outer page.
 STREAMLIT_IFRAME = 'iframe[title="streamlitApp"]'
 APP_CONTAINER = '[data-testid="stAppViewContainer"]'
+
+# Anything visible here means the app is still working.
+LOADING_SELECTORS = (
+    '[data-testid="stStatusWidget"]',  # script is still running
+    '[data-testid="stSpinner"]',       # st.spinner / cache_data spinners
+    '[data-testid="stSkeleton"]',      # element placeholders
+)
+# Backup check: the app's own spinner messages. Use full phrases only -- single
+# words like "Running" can appear in news headlines in the catalyst table.
+LOADING_TEXTS = (
+    "Scanning premarket movers",
+    "Scanning post-market movers",
+    "Fetching catalysts (",
+    "Fetching post-market catalysts",
+)
 
 MARKET_TZ = ZoneInfo("America/New_York")
 
@@ -161,34 +181,56 @@ def wait_for_app_scope(page, timeout_seconds=APP_BOOT_TIMEOUT_SECONDS):
 
 
 def wait_for_content_ready(scope, timeout_seconds=CONTENT_READY_TIMEOUT_SECONDS) -> bool:
-    """Wait for the app container, then for the 'Running...' indicator to clear."""
+    """Wait for the app container to appear."""
     try:
         scope.locator(APP_CONTAINER).first.wait_for(
             state="visible", timeout=timeout_seconds * 1000
         )
+        return True
     except Exception as e:
         log(f"Content container not detected within timeout: {e}")
         return False
 
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
+
+def find_loading_indicator(scope):
+    """Describe the first visible sign that the app is still working, or None."""
+    for selector in LOADING_SELECTORS:
+        if scope.locator(selector).locator("visible=true").count() > 0:
+            return selector
+    for text in LOADING_TEXTS:
+        if scope.get_by_text(text, exact=False).locator("visible=true").count() > 0:
+            return f"text '{text}'"
+    return None
+
+
+def wait_until_loaded(scope, timeout_seconds=LOADING_TIMEOUT_SECONDS,
+                      quiet_seconds=QUIET_SECONDS) -> bool:
+    """Poll until nothing has been loading for `quiet_seconds` in a row.
+    Returns False if that never happens within `timeout_seconds`."""
+    start = time.time()
+    quiet_since = None
+    last_state = None
+
+    while time.time() - start < timeout_seconds:
         try:
-            if scope.get_by_text("Running", exact=False).count() == 0:
-                return True
+            busy = find_loading_indicator(scope)
         except Exception as e:
-            log(f"Running-indicator check skipped due to: {e}")
-            return True
+            busy = f"check failed, will retry ({e})"
+
+        if busy is None:
+            if quiet_since is None:
+                quiet_since = time.time()
+            if time.time() - quiet_since >= quiet_seconds:
+                log(f"App finished loading after {time.time() - start:.0f}s.")
+                return True
+        else:
+            quiet_since = None  # something started again -- restart the count
+            if busy != last_state:
+                log(f"[{time.time() - start:.0f}s] Still loading: {busy}")
+        last_state = busy
         time.sleep(2)
-    log("Timed out waiting for 'Running' indicator to clear.")
-    return True
 
-
-def has_blocking_text(scope) -> bool:
-    """True if 'Scanning', 'Running' or 'Fetching' is still visible in the app."""
-    for word in ("Scanning", "Running", "Fetching"):
-        if scope.get_by_text(word, exact=False).count() > 0:
-            log(f"Blocking text '{word}' still present -- skipping screenshot/send.")
-            return True
+    log(f"Still loading after {timeout_seconds}s (last seen: {last_state}).")
     return False
 
 
@@ -231,12 +273,12 @@ def main():
             browser.close()
             sys.exit(1)
 
-        log(f"Waiting {WAIT_AFTER_LOAD_SECONDS}s for the app to finish rendering...")
-        time.sleep(WAIT_AFTER_LOAD_SECONDS)
-
-        if has_blocking_text(scope):
+        log("Waiting for the app to finish fetching and rendering...")
+        if not wait_until_loaded(scope):
+            # Fail the job (red run) instead of skipping silently.
+            save_debug(page, "App never finished loading.")
             browser.close()
-            return
+            sys.exit(1)
 
         img_bytes = page.screenshot(full_page=True)
         with open("screenshot.png", "wb") as f:  # keep a copy for debugging
